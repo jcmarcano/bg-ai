@@ -38,6 +38,11 @@ class MrJackGame(Game):
     
     def getActionSize(self):
         return (16,)
+    
+    def playerRepr(self, player):
+        return ["Detective", "Jack"][player]
+
+
 
 class MrJackState(State):
     def initState(self):
@@ -131,9 +136,6 @@ class MrJackState(State):
         if (np.count_nonzero(self.innocent) == self.game.characters - 1) and (self.round < 8 or len(self.cards) > 1):
             return [1, -1]
         return [0, 0]
-
-    def playerRepr(self, player):
-        return ["Detective", "Jack"][player]
 
     def actionRepr(self, action, player):
         return f"{action%self.game.characters+1} {['Invisible', 'Visible'][action//self.game.characters]}"

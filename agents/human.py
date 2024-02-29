@@ -24,7 +24,7 @@ class HumanAgent(Agent):
                     print(observation.actionRepr(action, self.player))
                 else:
                     print(f"{i + 1}: {observation.actionRepr(action, self.player)}")
-        print(f"Player {observation.playerRepr(self.player)}. Select an action")
+        print(f"Player {self.game.playerRepr(self.player)}. Select an action")
         while True:
             try:
                 selectedOption = int(input()) - 1

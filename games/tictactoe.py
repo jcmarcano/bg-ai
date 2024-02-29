@@ -3,7 +3,8 @@ import numpy as np
 
 PLAYERS = "XO"
 class TicTacToeGame(Game):
-    pass
+    def playerRepr(self, player):
+        return PLAYERS[player]
     
 class TicTacToeState(State):
     """ A state of the game, i.e. the game board.
@@ -46,12 +47,9 @@ class TicTacToeState(State):
                     return [-1, 1]
         return [0, 0]
 
-    def playerRepr(self, player):
-        return PLAYERS[player]
-
     def actionRepr(self, action, player):
         return f"({action//3}, {action%3 + 1})"
-
+    
     def __repr__(self):
         s= ""
         for i in range(9): 

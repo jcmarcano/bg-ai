@@ -18,6 +18,10 @@ class FourInRowGame(Game):
                 "hideOptions": True
             }
         return super().getAgentDefaults()
+    
+    def playerRepr(self, player):
+        return "XO"[player]
+
 
 class FourInRowState(State):
     def initState(self): 
@@ -152,9 +156,6 @@ class FourInRowState(State):
                         return [-1, 1]
                 if verbose: print("1: ", x,x+y, equalCount1, lastValue1, "           2: ", x,self.game.height - 1 - y - x, equalCount2, lastValue2)
         return [0,0]
-
-    def playerRepr(self, player):
-        return "XO"[player]
 
     def actionRepr(self, action, player):
         return f"{action + 1}"

@@ -233,6 +233,9 @@ class PatchworkGame(Game):
     def getModel(self):
         return PatchworkAlphaZeroModel(self.size, len(self.patches))
     
+    def playerRepr(self, player):
+        return ["1", "2"][player]
+    
     def __repr__(self):
         if self.version == 0:
             return "Patchwork"
@@ -493,9 +496,6 @@ class PatchworkState(State):
         if (self[1].pos < self[0].pos):
             return 1
         return self.lastPlayer  # if both positions are equal, last player repeat
-
-    def playerRepr(self, player):
-        return ["1", "2"][player]
 
     def __repr__(self):
         s = ""
