@@ -22,9 +22,16 @@ class AlphaZero:
                  selfPlayEpisodes=8, 
                  evalEpisodes=8,
                  parallel=True, 
-                 numCPUs=None):
+                 numCPUs=None,
+                 multiAgent=False):
+        
         self.game = game
-        self.samples = GameSamplesManager(game, "alphazero")
+        self.multiAgent=multiAgent
+        if self.multiAgent:
+            self.samples = [GameSamplesManager(game, "alphazero" + "_" + self.game.playerRepr(player)) for player in range(self.game.numPlayers)]
+        else:
+            self.samples = [GameSamplesManager(game, "alphazero")]
+
         self.model = model
         self.provider = provider
         self.temperature = temperature
@@ -57,13 +64,21 @@ class AlphaZero:
 
         self.game.randomGenerator = randomGenerator
 
-        provider = self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))
-        provider.initModel()
-        provider.load_checkpoint(repr(self.game), "alphazero_best")
+        agents = []
+        for player in range(len(self.samples)):
+            provider = self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))
+            provider.initModel()
+            if self.multiAgent:
+                provider.loadCheckpoint(repr(self.game), "alphazero_best_" + self.game.playerRepr(player))
+                agentPlayer = player
+            else:
+                provider.loadCheckpoint(repr(self.game), "alphazero_best")
+                agentPlayer = None
+
+            agents.append(MCTSAgent(self.game, iterMax=self.iterMax, exploration=self.exploration, evaluator=AlphaZeroEvaluator(provider), player=agentPlayer))
 
         curPlayer = 0
         state:State = self.game.getInitState()
-        agent = MCTSAgent(self.game, iterMax=self.iterMax, exploration=self.exploration, evaluator=AlphaZeroEvaluator(provider))
         
         episodeStep = 0
 
@@ -73,13 +88,17 @@ class AlphaZero:
 
             if state.isChanceState():
                 setId = state.determinize(randomGenerator)
-                agent.externalActionEvent(setId)
+                for agent in agents:
+                    agent.externalActionEvent(setId)
             else:
                 observation = state.getObservation(curPlayer)
                 logger.info(observation)
                 print(observation)
 
-                policy = agent.selectPolicy(observation)
+                if self.multiAgent:
+                    policy = agents[curPlayer].selectPolicy(observation)
+                else:
+                    policy = agents[0].selectPolicy(observation)
 
                 adjustedProbs = np.array([action[1]**(1/self.temperature) for action in policy])
                 probSum = sum(adjustedProbs)
@@ -96,7 +115,7 @@ class AlphaZero:
                             policyTensors[i][int(actionProb[0][i])] += adjustedProbs[j]
                         else:
                             policyTensors[i][int(actionProb[0])] += adjustedProbs[j]
-                observationTensors += observation.getObservationSymmetries(curPlayer, tuple(policyTensors))
+                observationTensors += [(obs[0], obs[1], curPlayer) for obs in observation.getObservationSymmetries(curPlayer, tuple(policyTensors))]
 
                 if episodeStep < self.temperatureDrop:
                     selectedActionPos = randomGenerator.choice(len(policy),p=adjustedProbs)
@@ -105,46 +124,56 @@ class AlphaZero:
                     action = max(policy, key=lambda action: action[1])[0]
 
                 print(f"Episode: {episodeNumber}, Step {episodeStep}, Player {curPlayer}, Action {action}")
-                logger.info(f"Episode: {episodeNumber}, Step {episodeStep}, Player {state.playerRepr(curPlayer)}, Action {state.actionRepr(action, curPlayer)}")
+                logger.info(f"Episode: {episodeNumber}, Step {episodeStep}, Player {self.game.playerRepr(curPlayer)}, Action {state.actionRepr(action, curPlayer)}")
 
                 state.performAction(action, curPlayer)
-                agent.externalActionEvent(action, curPlayer)
+                for agent in agents:
+                    agent.externalActionEvent(action, curPlayer)
                 curPlayer = state.getNextPlayer()
 
-        value = state.getResult()[0] # Get Value for player 0
+        result = state.getResult() # Get Value for current Player
 
         # Return list of observations tensors for player 0 with policies and final value
-        return [(observation[0], observation[1] + (value, )) for observation in observationTensors]
+        if self.multiAgent:
+            return [[(observation[0], observation[1] + (result[observation[2]], )) for observation in observationTensors if observation[2] == player] for player in range(self.game.numPlayers)]
+        else:
+            return [[(observation[0], observation[1] + (result[observation[2]], )) for observation in observationTensors]]
     
     def selfPlay(self, iteration=None):
         if iteration:
             iter = iteration
         else:
-            lastIter = self.samples.getLastIteration()
+            lastIter = self.samples[0].getLastIteration()
+
             if lastIter is None:
                 iter = 0
             else:
-                self.samples.loadTrainSamples(lastIter)
+                for s in self.samples:
+                    s.loadTrainSamples(lastIter)    
                 iter = lastIter + 1
 
         logger.info(f'Starting Iter #{iter + 1} ...')
         print(f'Starting Iter #{iter + 1} ...')
 
         if self.parallel:
-            for sample in p_map(self.executeEpisode, range(self.selfPlayEpisodes), self.game.randomGenerator.spawn(self.selfPlayEpisodes), num_cpus = self.numCPUs):
-                self.samples.addSamples(sample)
+            for samples in p_map(self.executeEpisode, range(self.selfPlayEpisodes), self.game.randomGenerator.spawn(self.selfPlayEpisodes), num_cpus = self.numCPUs):
+                for player, s in enumerate(self.samples):
+                    s.addSamples(samples[player])
         else:
             for episode in tqdm(range(self.selfPlayEpisodes)):
-                self.samples.addSamples(self.executeEpisode(episode, self.game.randomGenerator))
+                samples = self.executeEpisode(episode, self.game.randomGenerator)
+                for player, s in enumerate(self.samples):
+                    s.addSamples(samples[player])
 
-        self.samples.saveTrainSamples(iter)
+        for s in self.samples:
+            s.saveTrainSamples(iter)
 
     def trainSamples(self, iteration=None):
         # load trainSamples
         if iteration:
             iter = iteration
         else:
-            lastIter = self.samples.getLastIteration()
+            lastIter = self.samples[0].getLastIteration()
             if lastIter is None:
                 logger.info("There are no samples to train")
                 exit(1)
@@ -154,77 +183,127 @@ class AlphaZero:
         logger.info(f'Train Phase for Iter #{iter} ...')
 
         provider = self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))
-        provider.initModel()
+        for player, sm in enumerate(self.samples):
+            bestModelName = "alphazero_best"
+            tempModelName = "alphazero_temp"
 
-        if not provider.load_checkpoint(repr(self.game), "alphazero_best"):
-            provider.save_checkpoint(repr(self.game), "alphazero_best")    
+            if self.multiAgent:
+                bestModelName += "_" + self.game.playerRepr(player)
+                tempModelName += "_" + self.game.playerRepr(player)
+
+            provider.initModel()
+
+            if not provider.loadCheckpoint(repr(self.game), bestModelName):
+                provider.saveCheckpoint(repr(self.game), bestModelName)    
 
             
-        self.samples.loadTrainSamples(lastIter)
-        # shuffle samples before training
+            sm.loadTrainSamples(lastIter)
+            # TODO: shuffle samples before training
 
-        # training new network, keeping a copy of the old one
+            # training new network, keeping a copy of the old one
 
-        provider.train(self.samples.trainSamples)
-        provider.save_checkpoint(repr(self.game), "alphazero_temp")
+            provider.train(sm.trainSamples)
+            provider.saveCheckpoint(repr(self.game), tempModelName)
 
-    def evaluateGame(self, evalPlayer, provider1, provider2, randomGenerator):
+
+    def evaluateGame(self, evalPlayer, providers, randomGenerator, agentVersions=["temp","best"]):
         self.game.randomGenerator = randomGenerator
-        provider1.initModel()
-        if provider1.load_checkpoint(repr(self.game), "alphazero_temp"):
-            agent1 = MCTSAgent(self.game, iterMax=self.iterMax, exploration=self.exploration, evaluator=AlphaZeroEvaluator(provider1))
-        else:
-            raise Exception("Unable to find 'best' model")
+        agents = [None]*2
+        for player, provider in enumerate(providers):
+            provider.initModel()
 
-        provider2.initModel()
-        if provider2.load_checkpoint(repr(self.game), "alphazero_best"):
-            agent2 = MCTSAgent(self.game, iterMax=self.iterMax, exploration=self.exploration, evaluator=AlphaZeroEvaluator(provider2))
-        else:
-            raise Exception("Unable to find 'temp' model")
-
-        agents = [None, None]
-        agents[evalPlayer] = agent1
-        agents[1-evalPlayer] = agent2
+            modelName = "alphazero_" + agentVersions[player] + ("_" + self.game.playerRepr(player) if self.multiAgent else "")
+            if provider.loadCheckpoint(repr(self.game), modelName):
+                agent = MCTSAgent(self.game, iterMax=self.iterMax, exploration=self.exploration, evaluator=AlphaZeroEvaluator(provider))
+                if player == evalPlayer:
+                    agents[0] = agent
+                else:
+                    agents[1] = agent
+            else:
+                raise Exception(f"No checkpoint found: {modelName} for game: {repr(self.game)}")
 
         # Create Arena
         arena = Arena(self.game, agents, display=True)
 
         # Play game
-        return evalPlayer, arena.playGame()        
+        result = arena.playGame()
 
+        evalResult = [{},{}]
+        for i in range(len(agentVersions)):
+            if evalPlayer == 0:
+                evalResult[i][agentVersions[i]] = result[i]
+            else:
+                evalResult[i][agentVersions[i]] = result[1-i]
+
+        return evalResult
 
     def evaluate(self, iteration=None):
         # Perform episodes evaluation the model using new model as first player and then as second player
-        provider1 = self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))
-        provider2 = self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))
+        providers = [self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,)),
+                     self.provider(self.model, self.game.getObservationShapes(), self.game.getActionSize() + (1,))]
 
-        totalResult = [0,0]
-        evalPlayer = 0
+        if self.multiAgent:
+            agentVersions = [["temp", "temp"], ["temp", "best"], ["best", "temp"], ["best", "best"]]
+            totalResult = [{"temp": 0, "best": 0}, {"temp": 0, "best": 0}]
+        else:
+            agentVersions = [["temp", "best"]]
+            totalResult = [{"temp": 0, "best": 0}]
+
+        results = []
 
         if self.parallel:
-            for evalPlayer, result in p_map(self.evaluateGame, 
-                                            [0,1]*(self.evalEpisodes//2) + [0]*(self.evalEpisodes%2), 
-                                            [provider1]*self.evalEpisodes, 
-                                            [provider2]*self.evalEpisodes, 
+            evalPlayerBase = [0] * len(agentVersions) + [1] * len(agentVersions)
+            evalPlayerParam = evalPlayerBase * (self.evalEpisodes//(2*len(agentVersions))) + evalPlayerBase[:self.evalEpisodes%(2*len(agentVersions))]
+
+            agentVersionParam = agentVersions * (self.evalEpisodes//4) + agentVersions[:self.evalEpisodes%4]
+            for result in p_map(self.evaluateGame, 
+                                            evalPlayerParam, 
+                                            [providers]*self.evalEpisodes, 
                                             self.game.randomGenerator.spawn(self.evalEpisodes),
-                                            num_cpus = self.numCPUs):
-                totalResult += [result[evalPlayer], result[1-evalPlayer]]
-                evalPlayer = 1 - evalPlayer
+                                            agentVersionParam):
+                results.append(result)
+                for i in range(len(result)):
+                    version = list(result[i].keys())[0]
+                    if self.multiAgent:
+                        totalResult[i][version] += result[i][version]
+                    else:
+                        totalResult[0][version] += result[i][version]
         else:
+            evalPlayer = 0
+            versionComb = 0
             for _ in tqdm(range(self.evalEpisodes)):
-                _, result = self.evaluateGame(evalPlayer, provider1, provider2, self.game.randomGenerator)        
-                totalResult += [result[evalPlayer], result[1-evalPlayer]]
+                result = self.evaluateGame(evalPlayer, 
+                                           providers, 
+                                           self.game.randomGenerator,
+                                           agentVersions[versionComb])
+                results.append(result)
+                for i in range(len(result)):
+                    version = list(result[i].keys())[0]
+                    if self.multiAgent:
+                        totalResult[i][version] += result[i][version]
+                    else:
+                        totalResult[0][version] += result[i][version]
+
                 evalPlayer = 1 - evalPlayer
+                versionComb = (versionComb + 1) % 4 if self.multiAgent else 0
         
         #compare models
-                
-        if totalResult[0] > totalResult[1]:
-            # Temp model has better results, accept it as best model
-            provider1.save_checkpoint(self, repr(self.game), "alphazero_best")
-            provider1.save_checkpoint(self, repr(self.game), iteration=iteration)
-            print("Accepting New Model")
-        else:
-            print("Rejecting Model")
+        for player in range(len(totalResult)):
+            bestModelName = "alphazero_best"
+            tempModelName = "alphazero_temp"
+
+            if self.multiAgent:
+                bestModelName += "_" + self.game.playerRepr(player)
+                tempModelName += "_" + self.game.playerRepr(player)
+
+            if totalResult[player]["temp"] > totalResult[player]["best"]:
+                # Temp model has better results, accept it as best model
+
+                providers[0].renameCheckpoint(repr(self.game), tempModelName, bestModelName)
+                print(f"Accepting new model for agent: {player}")
+            else:
+                providers[0].deleteCheckpoint(repr(self.game), tempModelName)
+                print(f"Rejecting new model for agent: {player}")
 
 
     def train(self, iterations=1, step=None, iteration=None):
