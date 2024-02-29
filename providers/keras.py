@@ -1,6 +1,6 @@
 from bg_ai import Provider
 import numpy as np
-import os
+from pathlib import Path
 
 class KerasProvider(Provider):
     def __init__(self, model, inputShapes, outputShapes, batchSize=64, epochs=50, folder='/temp'):
@@ -35,18 +35,15 @@ class KerasProvider(Provider):
 
         return tuple(outputs)
 
-    def save_checkpoint(self, gameName, checkPointName, iteration=None):
-        filename = self.getFileName(gameName, checkPointName, iteration)
-        
-        filepath = os.path.join(self.folder, filename)
-        self.kerasModel.save_weights(filepath)
+    def saveCheckpoint(self, gameName, checkPointName, iteration=None):
+        filePath = Path(self.folder) / self.getFileName(gameName, checkPointName, iteration)
+        self.kerasModel.save_weights(filePath)
 
-    def load_checkpoint(self, gameName, checkPointName, iteration=None):
+    def loadCheckpoint(self, gameName, checkPointName, iteration=None):
         # change extension
-        filename = self.getFileName(gameName, checkPointName, iteration)
-        filepath = os.path.join(self.folder, filename)
-        if not os.path.isfile(filepath):
+        filePath = Path(self.folder) / self.getFileName(gameName, checkPointName, iteration)
+        if not filePath.is_file():
             return False
         
-        self.kerasModel.load_weights(filepath)
+        self.kerasModel.load_weights(filePath)
         return True

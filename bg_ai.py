@@ -3,10 +3,10 @@ from collections import deque
 import copy
 import logging
 import sys
-import os
 import re
-from pickle import Pickler, Unpickler
 import compress_pickle 
+from pathlib import Path
+
 
 
 class Game:
@@ -82,9 +82,12 @@ class Game:
             players: a tuple (min, max) of accepted players
         """
         return (2, 2)
+
+    def playerRepr(self, player):
+        return str(player)
     
 
-    def getAgentDefaults(self,policyName=""):
+    def getAgentDefaults(self, agentName=""):
         """
         Input: 
             policyName: NAme of the policy
@@ -94,6 +97,18 @@ class Game:
         """
         return {}
     
+    def getTrainerDefaults(self, trainerName=""):
+        """
+        Input: 
+            policyName: NAme of the policy
+        Returns:
+            kwargs: a dictionary of default keyword parameters to be used by the policy for this game
+                    always end the method calling super().getPolicyDefaults()
+        """
+        return 
+    
+        raise Exception (f"Trainer '{trainerName}' not available for game '{repr(self)}'")
+
     def __repr__(self):
         gameClass = self.__class__.__name__
         posGame = gameClass.rfind("Game")
@@ -410,9 +425,6 @@ class State(ComponentContainer):
         raise NotImplementedError()
 
 
-    def playerRepr(self, player):
-        return str(player)
-
     def actionRepr(self, action, player):
         return str(action)
 
@@ -429,6 +441,8 @@ class Agent:
         # Get agent default parameters from the game
 
         self.kwargs = game.getAgentDefaults(self.__class__.__name__)
+        if self.kwargs is None:
+            self.kwargs = {}
         if kwargs:
             self.kwargs.update(kwargs)
 
@@ -467,6 +481,9 @@ class Trainer:
         if kwargs:
             self.kwargs.update(kwargs)
 
+        if self.kwargs is None:
+            self.kwargs = {}
+
         self.initTrainer(**self.kwargs)
 
     def initTrainer(*kwargs):
@@ -494,12 +511,12 @@ class Provider:
     def predict(self, input):
         raise NotImplementedError()
 
-    def save_checkpoint(self, gameName, checkPointName, iteration=None):
+    def saveCheckpoint(self, gameName, checkPointName, iteration=None):
         raise NotImplementedError()
 
-    def load_checkpoint(self, gameName, checkPointName, iteration=None):
+    def loadCheckpoint(self, gameName, checkPointName, iteration=None):
         raise NotImplementedError()
-
+    
     def getFileName(self, gameName, checkPointName, iteration=None, removeExtension=False):
         fileName = f"{gameName}_{checkPointName}"
         if iteration is not None:
@@ -507,6 +524,17 @@ class Provider:
         if not removeExtension:
             fileName += self.checkpointExtension
         return fileName
+
+    def deleteCheckpoint(self, gameName, checkPointName, iteration=None):
+
+        file = Path(self.folder) / self.getFileName(gameName, checkPointName, iteration)
+        file.unlink(missing_ok=True)
+
+    def renameCheckpoint(self, gameName, checkPointFrom, checkPointTo, iteration=None):
+        fileFrom = Path(self.folder) / self.getFileName(gameName, checkPointFrom, iteration)
+        fileTo = Path(self.folder) / self.getFileName(gameName, checkPointTo, iteration)
+        fileFrom.replace(fileTo)
+
 
         
 class LogManager:
@@ -559,7 +587,7 @@ class Arena():
                     print(observation)
 
                 action = self.agents[curPlayer].selectAction(observation)
-                self.logger.info(f"Turn {it}, Player {state.playerRepr(curPlayer)}, Action {state.actionRepr(action, curPlayer)}")
+                self.logger.info(f"Turn {it}, Player {self.game.playerRepr(curPlayer)}, Action {state.actionRepr(action, curPlayer)}")
 
                 state.performAction(action, curPlayer)
 
@@ -573,7 +601,7 @@ class Arena():
         if self.display:
             print(state)
             winnerValue = max(result)
-            winners = [state.playerRepr(player) for player, value in enumerate(result) if value == winnerValue]
+            winners = [self.game.playerRepr(player) for player, value in enumerate(result) if value == winnerValue]
             print(f"Game over: Turn {it}, {'Tie' if len(winners) == len(result) else 'Winner: ' + winners[0] if len(winners) == 1 else 'Winners: ' + str(winners)}")
 
         return result
@@ -584,10 +612,9 @@ class GameSamplesManager:
     logger = LogManager().getLogger(__name__)
 
     def __init__(self, game, modelName, folder="/temp", queueSize=100000):
+        print(modelName)
         self.game = game
         self.modelName = modelName
-        if not os.path.exists(folder):
-            os.makedirs(folder)
         self.folder = folder
         self.trainSamples = deque([], queueSize)
 
@@ -600,12 +627,13 @@ class GameSamplesManager:
         return fileName
 
     def saveTrainSamples(self, iteration=None):
-        file = os.path.join(self.folder,self.getFileName(iteration))
+        file = Path(self.folder) / self.getFileName(iteration)
+        print(file)
         compress_pickle.dump(self.trainSamples, file)
         print(f"saved on {file}")
 
     def loadTrainSamples(self, iteration=None):
-        file = os.path.join(self.folder,self.getFileName(iteration))
+        file = Path(self.folder) / self.getFileName(iteration)
         self.trainSamples = compress_pickle.load(file)
 
         return iteration
@@ -613,10 +641,10 @@ class GameSamplesManager:
     def getLastIteration(self):
         iteration = None
 
-        for file in os.listdir(self.folder):
-            if file.startswith(self.getFileName(removeExtension=True)):
+        for file in Path(self.folder).iterdir():
+            if file.name.startswith(self.getFileName(removeExtension=True)):
                 iterRegExp = self.getFileName("([0-9]+)")
-                fa = re.findall(iterRegExp, file)
+                fa = re.findall(iterRegExp, file.name)
                 if len(fa) > 0:
                     if iteration is None or int(fa[0]) > iteration:
                         iteration = int(fa[0])
